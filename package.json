@@ -17,7 +17,6 @@
     ]
   },
   "scripts": {
-    "prepare": "node scripts/link-pi.mjs",
     "link": "node scripts/link-pi.mjs",
     "preview": "node scripts/preview.ts",
     "typecheck": "tsc --noEmit",

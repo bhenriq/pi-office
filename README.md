@@ -139,13 +139,13 @@ Requires pi 1.5.2 or newer (it uses `ctx.ui.custom()` overlays and the
 dependency: pi supplies `@earendil-works/pi-tui` and `pi-coding-agent`, so a
 checkout is ready to load as-is.
 
-**From git** — the same shape as the other extensions in this setup, and the only
-route that gets updates:
+**From git** — <https://github.com/bhenriq/pi-office>, the same shape as the other
+extensions in this setup, and the only route that gets updates:
 
 ```bash
-pi install git:github.com/<you>/pi-office
-pi update --extensions          # later, to pull changes
-pi remove git:github.com/<you>/pi-office
+pi install git:github.com/bhenriq/pi-office
+pi update --extensions                                              # later: pull changes
+pi remove git:github.com/bhenriq/pi-office                          # uninstall
 ```
 
 **From a copy** — no repository needed, e.g. between two laptops:
@@ -172,8 +172,9 @@ Only needed to hack on it, not to use it:
 
 ```bash
 npm install --legacy-peer-deps   # typescript + @types/node
-npm run link                   # symlinks pi's own packages for typechecking
-npm test                       # alignment round trips + every preview mode
+npm run link                     # link pi's own packages into ./node_modules
+npm test                         # alignment round trips + every preview mode
+npm run typecheck
 ```
 
 `scripts/link-pi.mjs` finds the running pi installation (managed
