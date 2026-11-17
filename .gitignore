@@ -1,0 +1,9 @@
+node_modules/
+
+# npm resolves the host @earendil-works packages through scripts/link-pi.mjs, so
+# a lockfile records absolute paths into this machine's pi installation.
+package-lock.json
+
+dist/
+*.log
+.DS_Store

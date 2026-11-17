@@ -1,0 +1,34 @@
+{
+  "name": "pi-office",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read and annotate artifacts (Markdown, HTML, text) inside pi's TUI, and send line-anchored edit requests to the agent",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "tui",
+    "markdown",
+    "artifacts"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "prepare": "node scripts/link-pi.mjs",
+    "link": "node scripts/link-pi.mjs",
+    "preview": "node scripts/preview.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/align-check.ts && node scripts/preview.ts > /dev/null && node scripts/preview.ts pretty > /dev/null && node scripts/preview.ts deck > /dev/null && node scripts/preview.ts present > /dev/null && node scripts/preview.ts help > /dev/null && node scripts/preview.ts html > /dev/null"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
