@@ -409,7 +409,10 @@ export default function piOffice(api: ExtensionAPI) {
     if (doc && edited) adoptDoc(session, doc);
 
     if (job.kind === "explain") {
-      viewer.setStatus(edited ? "explained (file also changed)" : lastLine(lastAssistantText) || "no explanation", "info");
+      // The reply is the deliverable, not a status blip: show it in a panel the
+      // user can scroll and dismiss.
+      if (lastAssistantText.trim()) viewer.showAnswer(lastAssistantText);
+      else viewer.setStatus(edited ? "explained (file also changed)" : "no explanation returned", "error");
     } else {
       viewer.setStatus(edited ? "file updated" : "agent finished without changing the file", edited ? "info" : "error");
     }

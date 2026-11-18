@@ -191,6 +191,10 @@ export class ArtifactViewer implements Component {
   private helpTop = 0;
   private composeMode: ComposeMode = defaultComposeMode;
   private composer: ActiveComposer | null = null;
+  /** The agent's reply, shown as a dismissible panel while reading it. */
+  private answer: { text: string; top: number } | null = null;
+  private answerRenderer: Markdown | null = null;
+  private answerKey = "";
   private prompt: { text: string; pos: number; mode: "instruction" | "replace" } | null = null;
   private status: { text: string; tone: "info" | "error" } | null = null;
   private agentBusy = false;
@@ -255,6 +259,19 @@ export class ArtifactViewer implements Component {
     this.touch();
   }
 
+  /** Show the agent's reply in a panel the user scrolls and dismisses. */
+  showAnswer(text: string): void {
+    this.answer = { text: text.trim(), top: 0 };
+    this.answerRenderer = null;
+    this.answerKey = "";
+    this.status = null;
+    this.touch();
+  }
+
+  get hasAnswer(): boolean {
+    return this.answer !== null;
+  }
+
   setStatus(text: string | null, tone: "info" | "error" = "info"): void {
     this.status = text === null ? null : { text, tone };
     this.touch();
@@ -304,6 +321,7 @@ export class ArtifactViewer implements Component {
     this.cacheWidth = -1;
     this.cacheVersion = -1;
     this.displayCache = null;
+    this.answerRenderer?.invalidate();
     this.composer?.editor.invalidate();
     this.prettyRenderer?.invalidate();
     this.slideRenderer?.invalidate();
@@ -329,6 +347,8 @@ export class ArtifactViewer implements Component {
     this.lastBodyHeight = bodyHeight;
     const body = this.composer
       ? this.renderComposer(width, bodyHeight)
+      : this.answer
+      ? this.renderAnswer(width, bodyHeight)
       : this.help
       ? this.renderHelp(width, bodyHeight)
       : this.presenting
@@ -377,6 +397,7 @@ export class ArtifactViewer implements Component {
     const sourceLabel = this.wrapped ? "SOURCE·WRAP" : "SOURCE";
     const label = this.composer
       ? this.composer.mode === "replace" ? "COMPOSE·REPLACE" : "COMPOSE·OTHER"
+      : this.answer ? "REPLY"
       : this.help ? "HELP"
       : this.presenting ? "SLIDE"
       : this.pretty ? "PRETTY"
@@ -394,6 +415,13 @@ export class ArtifactViewer implements Component {
     const th = this.theme;
     const selection = this.selectionRange();
     const slide = this.activeSlide();
+
+    if (this.answer) {
+      const position = this.answerRows.length > this.lastBodyHeight
+        ? `  ${th.fg("dim", `${Math.min(this.answer.top + 1, this.answerRows.length)}/${this.answerRows.length}`)}`
+        : "";
+      return this.fit(` ${th.fg("dim", "esc close · j/k scroll")}${position}`, width);
+    }
 
     if (this.composer) {
       const where = th.fg("accent", this.composer.title);
@@ -585,6 +613,63 @@ export class ArtifactViewer implements Component {
     return out;
   }
 
+  private answerRows: string[] = [];
+  private answerWidth = 0;
+
+  /** The reply, rendered as Markdown so lists and code read properly. */
+  private renderAnswer(width: number, bodyHeight: number): string[] {
+    const answer = this.answer;
+    if (!answer) return [];
+
+    if (this.answerRenderer === null || this.answerKey !== answer.text || this.answerWidth !== width) {
+      this.answerRenderer = new Markdown(answer.text, 1, 1, this.deps.markdownTheme);
+      this.answerRows = this.answerRenderer.render(width);
+      this.answerKey = answer.text;
+      this.answerWidth = width;
+    }
+
+    const maxTop = Math.max(0, this.answerRows.length - bodyHeight);
+    answer.top = clamp(answer.top, 0, maxTop);
+
+    const out: string[] = [];
+    for (let row = 0; row < bodyHeight; row++) {
+      const line = this.answerRows[answer.top + row];
+      out.push(line === undefined ? blankLine(width) : truncateToWidth(line, width, "…", true));
+    }
+    return out;
+  }
+
+  private handleAnswerKey(data: string): void {
+    const answer = this.answer;
+    if (!answer) return;
+
+    if (matchesKey(data, "escape") || matchesKey(data, "return") || data === "q" || data === " ") {
+      this.answer = null;
+      this.answerRenderer = null;
+      this.answerRows = [];
+      this.answerKey = "";
+      this.touch();
+      return;
+    }
+
+    const pages = Math.max(1, Math.floor((this.deps.tui.terminal.rows || 24) / 2));
+    const maxTop = Math.max(0, this.answerRows.length - this.lastBodyHeight);
+    const step =
+      matchesKey(data, "down") || data === "j" ? 1
+      : matchesKey(data, "up") || data === "k" ? -1
+      : matchesKey(data, "ctrl+d") ? pages
+      : matchesKey(data, "ctrl+u") ? -pages
+      : matchesKey(data, "pageDown") || matchesKey(data, "ctrl+f") ? pages * 2
+      : matchesKey(data, "pageUp") || matchesKey(data, "ctrl+b") ? -pages * 2
+      : data === "G" ? Number.MAX_SAFE_INTEGER
+      : data === "g" ? Number.MIN_SAFE_INTEGER
+      : 0;
+
+    if (step === 0) return;
+    answer.top = clamp(answer.top + step, 0, maxTop);
+    this.touch();
+  }
+
   private renderHelp(width: number, bodyHeight: number): string[] {
     const th = this.theme;
     const keyWidth = Math.min(18, Math.max(...HELP.flatMap((g) => g.rows.map(([keys]) => keys.length)), 0));
@@ -754,6 +839,11 @@ export class ArtifactViewer implements Component {
   handleInput(data: string): void {
     if (this.composer) {
       this.handleComposerKey(data);
+      return;
+    }
+
+    if (this.answer) {
+      this.handleAnswerKey(data);
       return;
     }
 

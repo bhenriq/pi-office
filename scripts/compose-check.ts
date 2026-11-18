@@ -233,5 +233,31 @@ console.log("ctrl+e cycles all three modes");
   check("prompt → editor → vim → prompt", seen.join(",") === "editor,vim,prompt", seen.join(","));
 }
 
+console.log("the agent's reply is a dismissible panel, not a status blip");
+{
+  const { viewer } = session("examples/demo-doc.md", [], "prompt");
+  viewer.showAnswer("First line.\n\nSecond paragraph with **emphasis** and a list:\n\n- one\n- two");
+  const body = viewer.render(90).join("\n");
+  check("panel is shown", viewer.hasAnswer);
+  check("header says REPLY", body.includes("REPLY"), body.split("\n")[0]);
+  check("footer says how to close", body.includes("esc close"), body.split("\n").slice(-2).join("\n"));
+  check("reply text is rendered", body.includes("Second paragraph"), "missing body");
+
+  for (const [name, key] of [["escape", "\x1b"], ["q", "q"], ["enter", "\r"]] as const) {
+    viewer.showAnswer("again");
+    viewer.render(90);
+    viewer.handleInput(key);
+    viewer.render(90);
+    check(`${name} closes it`, !viewer.hasAnswer);
+  }
+
+  viewer.showAnswer("once more");
+  viewer.render(90);
+  viewer.handleInput("k");
+  viewer.render(90);
+  check("unrelated keys keep it open", viewer.hasAnswer);
+  check("source is back after closing", !viewer.render(90).join("\n").includes("REPLY") || viewer.hasAnswer);
+}
+
 console.log(failures === 0 ? "\nall compose modes behave" : `\n${failures} failure(s)`);
 process.exit(failures === 0 ? 0 : 1);

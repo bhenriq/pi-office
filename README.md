@@ -42,7 +42,7 @@ moved) or rejected (if it is gone) instead of silently editing the wrong place.
 | `e` | rewrite the selection — applied directly, no agent |
 | `o` / `enter` | other: describe the change in words and the agent applies it |
 | `ctrl+e` | cycle how `e`/`o` compose: prompt → pi's editor → your `$EDITOR` |
-| `x` | explain — the agent replies without editing |
+| `x` | explain — the agent replies without editing; the reply opens in a panel you scroll and dismiss |
 | `y` | yank: copy the selection, the cursor line, the whole slide, or the visible rows |
 | `u` / `ctrl+r` | undo / redo the file, server-side |
 | `p` | pretty mode, or presentation mode in a deck |
@@ -257,7 +257,8 @@ content.
 - The command is `/office`, not `/edit`, so it can coexist with pi-retouche.
 - Typed instructions need the editor's submit key, and a one-key quick action
   (`r`/`l`/`m`/`x`) needs nothing, so the common cases never leave the viewer.
-- `x` (explain) shows the reply on one status line. The full answer is in the
-  transcript after you close the viewer.
+- `x` (explain) opens the reply in a scrollable panel — `j`/`k` to read it,
+  `esc` / `enter` / `q` to close. It is rendered as Markdown, so lists and code
+  blocks read properly rather than being flattened onto one line.
 - Undo/redo rewrite the file, so it is real file-level history — the same model
   as `pi-retouche`. The stack is per-session and starts when the file is opened.
