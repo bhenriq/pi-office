@@ -22,13 +22,7 @@ import { checkAnchor, describeAnchor } from "./lib/anchor.ts";
 import { copyText } from "./lib/clipboard.ts";
 import { buildPrompt } from "./lib/prompt.ts";
 import { makeDoc, rawRange, readDoc, type SourceDoc } from "./lib/source.ts";
-import {
-  ArtifactViewer,
-  type ComposeRequest,
-  type ViewerHistory,
-  type ViewerIntent,
-  type ViewerTheme,
-} from "./lib/viewer.ts";
+import { ArtifactViewer, type ViewerHistory, type ViewerIntent, type ViewerTheme } from "./lib/viewer.ts";
 
 const ARTIFACT_EXTS = new Set([
   ".md", ".markdown", ".mdown", ".mkd",
@@ -191,86 +185,40 @@ async function openArtifact(filePath: string, ctx: ExtensionContext): Promise<vo
   // where pi's chrome stays visible above and below.
   const fullscreen = process.env.PI_OFFICE_INLINE !== "1";
 
-  // `e` and `o` need pi's own editor (multi-line, and ctrl+g for $EDITOR), which
-  // cannot be shown while a custom component owns the screen. So the viewer closes,
-  // the editor opens, and the same viewer instance is re-mounted afterwards: all of
-  // its state lives in the instance, so the cursor and mode survive the round trip.
-  let viewer: ArtifactViewer | null = null;
-  // Held in an object because it is assigned from inside the component factory:
-  // control flow analysis would otherwise narrow it to null forever.
-  const pendingCompose: { request: ComposeRequest | null } = { request: null };
-  // A function call keeps the union: reading the property directly would be
-  // narrowed to null, since the assignment happens inside a callback.
-  const takeComposeRequest = (): ComposeRequest | null => pendingCompose.request;
-  const handlers = { close: () => {}, compose: (_request: ComposeRequest) => {} };
+  await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+    let closed = false;
+    const finish = () => {
+      if (closed) return;
+      closed = true;
+      session.stopWatching();
+      session.viewer = null;
+      if (active === session) active = null;
+      done();
+    };
 
-  for (;;) {
-    pendingCompose.request = null;
-
-    const outcome = await ctx.ui.custom<"close" | "compose">((tui, theme, _keybindings, done) => {
-      handlers.close = () => done("close");
-      handlers.compose = (request) => {
-        pendingCompose.request = request;
-        done("compose");
-      };
-
-      if (viewer) {
-        viewer.rebind(tui, theme as unknown as ViewerTheme, getMarkdownTheme());
-      } else {
-        viewer = new ArtifactViewer(session.doc, {
-          tui,
-          theme: theme as unknown as ViewerTheme,
-          markdownTheme: getMarkdownTheme(),
-          history: session.history,
-          fullscreen,
-          onSubmit: (intent) => submit(session, intent),
-          onUndo: () => stepHistory(session, "undo"),
-          onRedo: () => stepHistory(session, "redo"),
-          onCopy: (text, label) => {
-            void copyText(text).then((result) => {
-              if (!result.ok) {
-                session.viewer?.setStatus(`clipboard unavailable (${result.error ?? "no tool"})`, "error");
-              } else if (result.via !== "clipboard") {
-                session.viewer?.setStatus(`${label} copied via ${result.via}`, "info");
-              }
-            });
-          },
-          onCompose: (request) => handlers.compose(request),
-          onClose: () => handlers.close(),
+    session.viewer = new ArtifactViewer(session.doc, {
+      tui,
+      theme: theme as unknown as ViewerTheme,
+      markdownTheme: getMarkdownTheme(),
+      history: session.history,
+      fullscreen,
+      onSubmit: (intent) => submit(session, intent),
+      onUndo: () => stepHistory(session, "undo"),
+      onRedo: () => stepHistory(session, "redo"),
+      onCopy: (text, label) => {
+        void copyText(text).then((result) => {
+          if (!result.ok) {
+            session.viewer?.setStatus(`clipboard unavailable (${result.error ?? "no tool"})`, "error");
+          } else if (result.via !== "clipboard") {
+            session.viewer?.setStatus(`${label} copied via ${result.via}`, "info");
+          }
         });
-      }
+      },
+      onClose: finish,
+    });
 
-      session.viewer = viewer;
-      return viewer;
-    }, fullscreen ? { overlay: true, overlayOptions: FULLSCREEN_OVERLAY } : undefined);
-
-    const request = takeComposeRequest();
-    if (outcome !== "compose" || !request) break;
-
-    const text = await ctx.ui.editor(request.title, request.prefill);
-    if (text === undefined || text.trim().length === 0) continue;
-
-    if (request.mode === "replace") {
-      applyDirectEdit(session, {
-        kind: "replace",
-        instruction: "",
-        anchor: request.anchor,
-        replacement: text,
-        slide: request.slide,
-      });
-    } else {
-      submit(session, {
-        kind: "edit",
-        instruction: text.trim(),
-        anchor: request.anchor,
-        slide: request.slide,
-      });
-    }
-  }
-
-  session.stopWatching();
-  session.viewer = null;
-  if (active === session) active = null;
+    return session.viewer;
+  }, fullscreen ? { overlay: true, overlayOptions: FULLSCREEN_OVERLAY } : undefined);
 }
 
 async function refreshFromDisk(session: OpenSession): Promise<void> {

@@ -44,16 +44,6 @@ export interface ViewerIntent {
   replacement?: string;
 }
 
-/** Hand-off to the host so the user can compose in pi's own editor. */
-export interface ComposeRequest {
-  mode: "instruction" | "replace";
-  /** Dialog title, naming the anchor being acted on. */
-  title: string;
-  prefill: string;
-  anchor: Anchor;
-  slide?: SlideContext;
-}
-
 export interface ViewerHistory {
   versions: string[];
   index: number;
@@ -73,12 +63,6 @@ export interface ViewerDeps {
   onSubmit(intent: ViewerIntent): void;
   /** `y`: hand the text to the host, which owns the clipboard. */
   onCopy?(text: string, label: string): void;
-  /**
-   * `e` / `o`: ask the host to compose the text in pi's editor (multi-line, and
-   * `ctrl+g` opens `$EDITOR`). When absent — tests, non-TUI hosts — the viewer
-   * falls back to its own single-line prompt.
-   */
-  onCompose?(request: ComposeRequest): void;
   onUndo(): void;
   onRedo(): void;
   onClose(): void;
@@ -111,8 +95,8 @@ const HELP: { section: string; rows: [keys: string, description: string][] }[] =
     rows: [
       ["v", "start or clear a selection"],
       ["r l m", "remove / shorter / longer"],
-      ["e", "rewrite the selection in pi's editor (ctrl+g for $EDITOR)"],
-      ["o  enter", "other: describe the change in words, same editor"],
+      ["e", "replace the selection with text you type"],
+      ["o  enter", "other: describe the change in words"],
       ["x", "explain, without changing the file"],
       ["y", "yank: copy the selection, line, slide, or visible rows"],
       ["u  ctrl+r", "undo / redo the file"],
@@ -229,17 +213,6 @@ export class ArtifactViewer implements Component {
     this.slideRenderer = null;
     this.slideRenderKey = "";
     this.touch();
-  }
-
-  /**
-   * Re-attach after the host closed and reopened the component around a compose
-   * hand-off. State (cursor, scroll, selection, mode) lives in the viewer, so it
-   * survives the round trip.
-   */
-  rebind(tui: Pick<TUI, "terminal" | "requestRender">, theme: ViewerTheme, markdownTheme: MarkdownTheme): void {
-    this.deps = { ...this.deps, tui, theme, markdownTheme };
-    this.theme = theme;
-    this.invalidate();
   }
 
   setAgentState(busy: boolean, line = ""): void {
@@ -830,8 +803,8 @@ export class ArtifactViewer implements Component {
     else if (data === "G") this.jumpTo(Number.MAX_SAFE_INTEGER);
     else if (data === "u") this.deps.onUndo();
     else if (matchesKey(data, "ctrl+r")) this.deps.onRedo();
-    else if (data === "e") this.compose("replace");
-    else if (data === "o" || matchesKey(data, "return")) this.compose("instruction");
+    else if (data === "e") this.openReplacePrompt();
+    else if (data === "o" || matchesKey(data, "return")) this.openPrompt();
     else if (QUICK_ACTIONS[data]) this.submit(QUICK_ACTIONS[data].kind, QUICK_ACTIONS[data].instruction);
   }
 
@@ -902,8 +875,8 @@ export class ArtifactViewer implements Component {
     else if (data === "G") this.scrollPretty(Number.MAX_SAFE_INTEGER);
     else if (data === "u") this.deps.onUndo();
     else if (matchesKey(data, "ctrl+r")) this.deps.onRedo();
-    else if (data === "e") this.compose("replace");
-    else if (data === "o" || matchesKey(data, "return")) this.compose("instruction");
+    else if (data === "e") this.openReplacePrompt();
+    else if (data === "o" || matchesKey(data, "return")) this.openPrompt();
     else if (QUICK_ACTIONS[data]) this.submit(QUICK_ACTIONS[data].kind, QUICK_ACTIONS[data].instruction);
   }
 
@@ -981,33 +954,6 @@ export class ArtifactViewer implements Component {
       prompt.pos++;
       this.touch();
     }
-  }
-
-  /**
-   * `e` and `o` ask the host for a real editor when it can provide one, because
-   * a one-line prompt cannot express a paragraph.
-   */
-  private compose(mode: "instruction" | "replace"): void {
-    if (!this.deps.onCompose) {
-      if (mode === "replace") this.openReplacePrompt();
-      else this.openPrompt();
-      return;
-    }
-
-    const target = this.target();
-    const range = mode === "replace" ? this.replaceTarget() : { start: target.start, end: target.end };
-    const wholeSlide = mode === "replace" ? false : target.wholeSlide;
-    const anchor = makeAnchor(this.doc, range.start, range.end);
-    const text = this.doc.lines.slice(range.start, range.end + 1).join("\n");
-
-    this.anchorLine = null;
-    this.deps.onCompose({
-      mode,
-      title: mode === "replace" ? `Replace ${describeAnchor(anchor)}` : `Instruction for ${describeAnchor(anchor)}`,
-      prefill: mode === "replace" ? text : "",
-      anchor,
-      slide: this.slideContext(wholeSlide),
-    });
   }
 
   private openPrompt(): void {
