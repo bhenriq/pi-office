@@ -18,7 +18,7 @@
  * `SourceDoc` whenever the file changes on disk, and the viewer re-renders.
  */
 
-import type { Component, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
+import type { Component, EditorComponent, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
 import {
   Markdown,
   matchesKey,
@@ -63,6 +63,12 @@ export interface ViewerDeps {
   onSubmit(intent: ViewerIntent): void;
   /** `y`: hand the text to the host, which owns the clipboard. */
   onCopy?(text: string, label: string): void;
+  /**
+   * Build the host's configured editor (pi-vim when installed, pi's own editor
+   * otherwise) for composing `e`/`o`. Absent means the viewer can only offer its
+   * single-line prompt.
+   */
+  createEditor?(): EditorComponent | null;
   onUndo(): void;
   onRedo(): void;
   onClose(): void;
@@ -95,8 +101,10 @@ const HELP: { section: string; rows: [keys: string, description: string][] }[] =
     rows: [
       ["v", "start or clear a selection"],
       ["r l m", "remove / shorter / longer"],
-      ["e", "replace the selection with text you type"],
+      ["e", "rewrite the selection: replace it with text you compose"],
       ["o  enter", "other: describe the change in words"],
+      ["ctrl+e", "switch e/o between the one-line prompt and pi's editor"],
+      ["", "with a modal editor, esc first: enter submits from normal mode"],
       ["x", "explain, without changing the file"],
       ["y", "yank: copy the selection, line, slide, or visible rows"],
       ["u  ctrl+r", "undo / redo the file"],
@@ -114,6 +122,18 @@ const HELP: { section: string; rows: [keys: string, description: string][] }[] =
     ],
   },
 ];
+
+/** How `e`/`o` compose. Remembered for the process, so it survives reopening. */
+type ComposeMode = "prompt" | "editor";
+let defaultComposeMode: ComposeMode = "prompt";
+
+interface ActiveComposer {
+  editor: EditorComponent;
+  mode: "instruction" | "replace";
+  anchor: Anchor;
+  slide?: SlideContext;
+  title: string;
+}
 
 const MIN_HEIGHT = 9;
 const MAX_HEIGHT = 200;
@@ -157,6 +177,8 @@ export class ArtifactViewer implements Component {
   private prettyViewport = 1;
   private help = false;
   private helpTop = 0;
+  private composeMode: ComposeMode = defaultComposeMode;
+  private composer: ActiveComposer | null = null;
   private prompt: { text: string; pos: number; mode: "instruction" | "replace" } | null = null;
   private status: { text: string; tone: "info" | "error" } | null = null;
   private agentBusy = false;
@@ -239,6 +261,8 @@ export class ArtifactViewer implements Component {
     pretty: boolean;
     presenting: boolean;
     slide: number | null;
+    composeMode: ComposeMode;
+    composing: boolean;
   } {
     return {
       cursor: this.cursor,
@@ -248,6 +272,8 @@ export class ArtifactViewer implements Component {
       pretty: this.pretty,
       presenting: this.presenting,
       slide: this.activeSlide()?.number ?? null,
+      composeMode: this.composeMode,
+      composing: this.composer !== null,
     };
   }
 
@@ -266,6 +292,7 @@ export class ArtifactViewer implements Component {
     this.cacheWidth = -1;
     this.cacheVersion = -1;
     this.displayCache = null;
+    this.composer?.editor.invalidate();
     this.prettyRenderer?.invalidate();
     this.slideRenderer?.invalidate();
   }
@@ -288,7 +315,9 @@ export class ArtifactViewer implements Component {
     const bodyHeight = height - 5;
     this.lastWidth = width;
     this.lastBodyHeight = bodyHeight;
-    const body = this.help
+    const body = this.composer
+      ? this.renderComposer(width, bodyHeight)
+      : this.help
       ? this.renderHelp(width, bodyHeight)
       : this.presenting
         ? this.renderSlide(width, bodyHeight)
@@ -334,7 +363,12 @@ export class ArtifactViewer implements Component {
     const showRows = this.pretty || (this.presenting && scrolls);
     const position = showRows ? ` ${Math.min(this.prettyTop + 1, Math.max(1, this.prettyRows))}/${this.prettyRows}` : "";
     const sourceLabel = this.wrapped ? "SOURCE·WRAP" : "SOURCE";
-    const label = this.help ? "HELP" : this.presenting ? "SLIDE" : this.pretty ? "PRETTY" : sourceLabel;
+    const label = this.composer
+      ? this.composer.mode === "replace" ? "COMPOSE·REPLACE" : "COMPOSE·OTHER"
+      : this.help ? "HELP"
+      : this.presenting ? "SLIDE"
+      : this.pretty ? "PRETTY"
+      : sourceLabel;
     const mode = th.fg(this.help || this.presenting || this.pretty ? "accent" : "muted", `${label}${position}`);
     const undo = `${this.deps.history.index + 1}/${this.deps.history.versions.length}`;
     const right = th.fg("dim", `${mode}${th.fg("dim", " · ")}${undo} `);
@@ -348,6 +382,16 @@ export class ArtifactViewer implements Component {
     const th = this.theme;
     const selection = this.selectionRange();
     const slide = this.activeSlide();
+
+    if (this.composer) {
+      const where = th.fg("accent", this.composer.title);
+      // A modal editor submits from normal mode, so "enter" alone would mislead.
+      const modal = /vim|modal/i.test(this.composer.editor.constructor?.name ?? "");
+      const keys = modal
+        ? "esc then enter submit · ctrl+c cancel · ctrl+e prompt"
+        : "enter submit · ctrl+c cancel · ctrl+e prompt";
+      return this.fit(` ${where}  ${th.fg("dim", keys)}`, width);
+    }
 
     if (this.help) {
       return this.fit(th.fg("dim", " h ? esc · close help · j/k scroll"), width);
@@ -513,6 +557,20 @@ export class ArtifactViewer implements Component {
   private renderPretty(width: number, bodyHeight: number): string[] {
     const rendered = this.markdown().render(width);
     return this.renderPagedRows(rendered, width, bodyHeight);
+  }
+
+  /** While composing, the editor owns the body: it needs the room, vi especially. */
+  private renderComposer(width: number, bodyHeight: number): string[] {
+    const lines = this.composer?.editor.render(width) ?? [];
+    // Long drafts scroll from the bottom: the cursor is where you are typing.
+    const start = Math.max(0, lines.length - bodyHeight);
+    const out: string[] = [];
+
+    for (let row = 0; row < bodyHeight; row++) {
+      const line = lines[start + row];
+      out.push(line === undefined ? blankLine(width) : truncateToWidth(line, width, "…", true));
+    }
+    return out;
   }
 
   private renderHelp(width: number, bodyHeight: number): string[] {
@@ -682,8 +740,18 @@ export class ArtifactViewer implements Component {
   // --------------------------------------------------------------- input
 
   handleInput(data: string): void {
+    if (this.composer) {
+      this.handleComposerKey(data);
+      return;
+    }
+
     if (this.prompt) {
       this.handlePromptKey(data);
+      return;
+    }
+
+    if (matchesKey(data, "ctrl+e")) {
+      this.closeComposer(this.composeMode === "editor" ? "prompt" : "editor");
       return;
     }
 
@@ -803,8 +871,8 @@ export class ArtifactViewer implements Component {
     else if (data === "G") this.jumpTo(Number.MAX_SAFE_INTEGER);
     else if (data === "u") this.deps.onUndo();
     else if (matchesKey(data, "ctrl+r")) this.deps.onRedo();
-    else if (data === "e") this.openReplacePrompt();
-    else if (data === "o" || matchesKey(data, "return")) this.openPrompt();
+    else if (data === "e") this.compose("replace");
+    else if (data === "o" || matchesKey(data, "return")) this.compose("instruction");
     else if (QUICK_ACTIONS[data]) this.submit(QUICK_ACTIONS[data].kind, QUICK_ACTIONS[data].instruction);
   }
 
@@ -875,8 +943,8 @@ export class ArtifactViewer implements Component {
     else if (data === "G") this.scrollPretty(Number.MAX_SAFE_INTEGER);
     else if (data === "u") this.deps.onUndo();
     else if (matchesKey(data, "ctrl+r")) this.deps.onRedo();
-    else if (data === "e") this.openReplacePrompt();
-    else if (data === "o" || matchesKey(data, "return")) this.openPrompt();
+    else if (data === "e") this.compose("replace");
+    else if (data === "o" || matchesKey(data, "return")) this.compose("instruction");
     else if (QUICK_ACTIONS[data]) this.submit(QUICK_ACTIONS[data].kind, QUICK_ACTIONS[data].instruction);
   }
 
@@ -954,6 +1022,108 @@ export class ArtifactViewer implements Component {
       prompt.pos++;
       this.touch();
     }
+  }
+
+  /**
+   * `e` / `o` compose either in the built-in one-line prompt or in the host's
+   * editor (pi-vim when installed). `ctrl+e` chooses, and the choice is
+   * remembered for the process.
+   */
+  private compose(mode: "instruction" | "replace"): void {
+    if (this.composeMode === "prompt" || !this.deps.createEditor) {
+      if (mode === "replace") this.openReplacePrompt();
+      else this.openPrompt();
+      return;
+    }
+
+    const editor = this.deps.createEditor();
+    if (!editor) {
+      if (mode === "replace") this.openReplacePrompt();
+      else this.openPrompt();
+      return;
+    }
+
+    const target = this.target();
+    const range = mode === "replace" ? this.replaceTarget() : { start: target.start, end: target.end };
+    const wholeSlide = mode === "replace" ? false : target.wholeSlide;
+    const anchor = makeAnchor(this.doc, range.start, range.end);
+    const text = this.doc.lines.slice(range.start, range.end + 1).join("\n");
+
+    editor.setText(mode === "replace" ? text : "");
+    editor.onSubmit = (value: string) => this.finishComposer(value);
+    (editor as { focused?: boolean }).focused = true;
+
+    this.composer = {
+      editor,
+      mode,
+      anchor,
+      slide: this.slideContext(wholeSlide),
+      title: `${mode === "replace" ? "Replace" : "Instruction for"} ${describeAnchor(anchor)}`,
+    };
+    this.anchorLine = null;
+    this.status = null;
+    this.touch();
+  }
+
+  private finishComposer(text: string): void {
+    const composer = this.composer;
+    if (!composer) return;
+    this.composer = null;
+
+    if (!text.trim()) {
+      this.touch();
+      return;
+    }
+
+    if (composer.mode === "replace") {
+      this.status = { text: `replacing ${describeAnchor(composer.anchor)}`, tone: "info" };
+      this.deps.onSubmit({
+        kind: "replace",
+        instruction: "",
+        anchor: composer.anchor,
+        replacement: text,
+        slide: composer.slide,
+      });
+    } else {
+      this.status = { text: `sent ${describeAnchor(composer.anchor)} to the agent`, tone: "info" };
+      this.deps.onSubmit({
+        kind: "edit",
+        instruction: text.trim(),
+        anchor: composer.anchor,
+        slide: composer.slide,
+      });
+    }
+    this.touch();
+  }
+
+  private closeComposer(next?: ComposeMode): void {
+    this.composer = null;
+    if (next) {
+      this.composeMode = next;
+      defaultComposeMode = next;
+      this.status = {
+        text: next === "editor" ? "composing in the editor" : "composing in the prompt",
+        tone: "info",
+      };
+    }
+    this.touch();
+  }
+
+  private handleComposerKey(data: string): void {
+    const composer = this.composer;
+    if (!composer) return;
+
+    if (matchesKey(data, "ctrl+e")) {
+      this.closeComposer("prompt");
+      return;
+    }
+    if (matchesKey(data, "ctrl+c")) {
+      this.closeComposer();
+      return;
+    }
+
+    composer.editor.handleInput?.(data);
+    this.touch();
   }
 
   private openPrompt(): void {

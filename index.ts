@@ -17,7 +17,8 @@ import { watchFile, unwatchFile } from "node:fs";
 import { readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, getSelectListTheme } from "@earendil-works/pi-coding-agent";
+import { Editor } from "@earendil-works/pi-tui";
 import { checkAnchor, describeAnchor } from "./lib/anchor.ts";
 import { copyText } from "./lib/clipboard.ts";
 import { buildPrompt } from "./lib/prompt.ts";
@@ -185,7 +186,7 @@ async function openArtifact(filePath: string, ctx: ExtensionContext): Promise<vo
   // where pi's chrome stays visible above and below.
   const fullscreen = process.env.PI_OFFICE_INLINE !== "1";
 
-  await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+  await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
     let closed = false;
     const finish = () => {
       if (closed) return;
@@ -205,6 +206,20 @@ async function openArtifact(filePath: string, ctx: ExtensionContext): Promise<vo
       onSubmit: (intent) => submit(session, intent),
       onUndo: () => stepHistory(session, "undo"),
       onRedo: () => stepHistory(session, "redo"),
+      // pi-vim when installed, pi's own editor otherwise. Built fresh per press
+      // so the composer never inherits a half-finished draft.
+      createEditor: () => {
+        const editorTheme = {
+          borderColor: (text: string) => theme.fg("border", text),
+          selectList: getSelectListTheme(),
+        };
+        try {
+          const factory = ctx.ui.getEditorComponent();
+          return factory ? factory(tui, editorTheme, keybindings) : new Editor(tui, editorTheme);
+        } catch {
+          return null;
+        }
+      },
       onCopy: (text, label) => {
         void copyText(text).then((result) => {
           if (!result.ok) {

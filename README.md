@@ -39,8 +39,9 @@ moved) or rejected (if it is gone) instead of silently editing the wrong place.
 | `v` | start or clear a visual selection |
 | `r` | remove the selection (or the cursor line) |
 | `l` / `m` | say it shorter / longer |
-| `e` | replace the selection with text you type — applied directly, no agent |
+| `e` | rewrite the selection — applied directly, no agent |
 | `o` / `enter` | other: describe the change in words and the agent applies it |
+| `ctrl+e` | compose `e`/`o` in the one-line prompt, or in pi's editor |
 | `x` | explain — the agent replies without editing |
 | `y` | yank: copy the selection, the cursor line, the whole slide, or the visible rows |
 | `u` / `ctrl+r` | undo / redo the file, server-side |
@@ -138,11 +139,23 @@ Two fixtures, meant to be read side by side:
 
 ## How a change flows
 
-All five actions are one keystroke on the selection: `r` remove, `l` less,
+All the actions are one keystroke on the selection: `r` remove, `l` less,
 `m` more, `o` other (words to the agent), `x` explain. `e` is the exception and
 never reaches the agent at all — it is a typed replacement applied to the file
 directly, which line anchors make exact, and it lands on the undo stack like any
 other write so `u` reverts it.
+
+`e` and `o` compose in one of two places, chosen with `ctrl+e` and remembered for
+the session:
+
+- **the prompt** — the viewer's own one-line input, no mode switching;
+- **the editor** — pi's configured editor, which is `pi-vim` when it is
+  installed: full modal editing, multi-line, in the body of the viewer, with the
+  document still on screen. With a modal editor, press `esc` first and then
+  `enter`; `enter` submits from normal mode. The editor takes the whole body, so
+  a long draft has room.
+
+`ctrl+c` cancels either one.
 
 1. You press `l` on lines 12–18.
 2. The extension checks the anchor against the current file and sends a follow-up
