@@ -48,13 +48,17 @@ function makeViewer(path: string) {
   return { viewer, doc };
 }
 
-function check(path: string) {
-  console.log(`\n${path}`);
+function check(path: string, wrapped: boolean) {
+  console.log(`\n${path}${wrapped ? " (soft wrap)" : ""}`);
   for (const target of [0, 8, 20, 35, 50, 61]) {
     const { viewer, doc } = makeViewer(path);
     if (target >= doc.lines.length) continue;
 
     viewer.render(WIDTH); // establish width/height
+    if (wrapped) {
+      viewer.handleInput("w");
+      viewer.render(WIDTH);
+    }
     for (let i = 0; i < target; i++) viewer.handleInput("j");
     viewer.render(WIDTH);
     const before = viewer.debugPosition();
@@ -83,7 +87,10 @@ function check(path: string) {
   }
 }
 
-for (const path of ["examples/demo-doc.md", "examples/demo-deck.md"]) check(path);
+for (const path of ["examples/demo-doc.md", "examples/demo-deck.md"]) {
+  check(path, false);
+  check(path, true);
+}
 
 console.log(failures === 0 ? "\nall round trips within one line" : `\n${failures} drift(s)`);
 process.exit(failures === 0 ? 0 : 1);

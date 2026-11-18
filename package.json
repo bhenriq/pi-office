@@ -20,7 +20,7 @@
     "link": "node scripts/link-pi.mjs",
     "preview": "node scripts/preview.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/align-check.ts && node scripts/yank-check.ts && node scripts/preview.ts > /dev/null && node scripts/preview.ts pretty > /dev/null && node scripts/preview.ts deck > /dev/null && node scripts/preview.ts present > /dev/null && node scripts/preview.ts help > /dev/null && node scripts/preview.ts html > /dev/null"
+    "test": "node scripts/align-check.ts && node scripts/yank-check.ts && node scripts/preview.ts > /dev/null && node scripts/preview.ts pretty > /dev/null && node scripts/preview.ts deck > /dev/null && node scripts/preview.ts present > /dev/null && node scripts/preview.ts wrap > /dev/null && node scripts/preview.ts help > /dev/null && node scripts/preview.ts html > /dev/null"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

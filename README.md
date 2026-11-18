@@ -35,6 +35,7 @@ moved) or rejected (if it is gone) instead of silently editing the wrong place.
 | `ctrl+d` / `ctrl+u` | half page |
 | `ctrl+f` / `ctrl+b` | page |
 | `g` / `G` | first / last line |
+| `w` | soft-wrap long lines, or truncate them |
 | `v` | start or clear a visual selection |
 | `r` | remove the selection (or the cursor line) |
 | `l` / `m` | say it shorter / longer |
@@ -62,8 +63,12 @@ file.
 ## Modes
 
 - **source** — the file line for line with line numbers and light syntax
-  dimming. One screen row is one source line, which is what makes anchors exact.
-  This is the mode that produces intents.
+  dimming, which is what makes anchors exact. This is the mode that produces
+  intents. Long lines are truncated with an ellipsis by default; `w` switches to
+  soft wrap, where a source line occupies as many screen rows as it needs and
+  only the first row carries its number. Wrapping changes the layout, never the
+  anchors: a selection is still whole source lines, and `y` still copies the
+  unwrapped text.
 - **presentation** — one slide at a time, rendered. `j`/`space` scroll a long
   slide and advance to the next once it has nothing left to show; `k` mirrors
   that; `]`/`[` always jump. A slide that fits therefore behaves like a

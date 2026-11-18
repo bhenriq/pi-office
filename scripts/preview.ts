@@ -171,6 +171,13 @@ if (mode === "html") {
   const lines = viewer.render(width);
   assertWidth(lines, width, "html");
   show(lines, width);
+} else if (mode === "wrap") {
+  const { viewer } = build("md", rows, width);
+  viewer.handleInput("w"); // soft wrap on
+  for (let i = 0; i < 4; i++) viewer.handleInput("j");
+  const lines = viewer.render(width);
+  assertWidth(lines, width, "wrap");
+  show(lines, width);
 } else if (mode === "help") {
   const { viewer } = build("deck", rows, width);
   viewer.handleInput("h");

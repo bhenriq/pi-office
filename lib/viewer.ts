@@ -25,6 +25,7 @@ import {
   stripTerminalSequences,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { buildRowMap, type RowMap } from "./align.ts";
 import { describeAnchor, makeAnchor, type Anchor } from "./anchor.ts";
@@ -84,6 +85,7 @@ const HELP: { section: string; rows: [keys: string, description: string][] }[] =
       ["ctrl+d ctrl+u", "half page"],
       ["ctrl+f ctrl+b", "page"],
       ["g G", "start / end"],
+      ["w", "soft wrap long lines (on or off)"],
       ["p", "rendered form: whole file, or one slide in a deck"],
       ["h  ?", "this help"],
     ],
@@ -120,6 +122,16 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/** One screen row of the source view. A wrapped line spans several of them. */
+interface DisplayRow {
+  /** Source line this row belongs to. */
+  line: number;
+  /** Styled text of this row's segment. */
+  text: string;
+  /** True for the row that carries the line number and marker. */
+  first: boolean;
+}
+
 function blankLine(width: number): string {
   return " ".repeat(Math.max(0, width));
 }
@@ -131,6 +143,11 @@ export class ArtifactViewer implements Component {
 
   private cursor = 0;
   private scrollTop = 0;
+  /** Soft-wrap long source lines instead of truncating them. */
+  private wrapped = false;
+  /** Screen row the cursor occupied at the last source render. */
+  private cursorScreenRow = 0;
+  private displayCache: { key: string; rows: DisplayRow[]; firstRow: number[] } | null = null;
   private anchorLine: number | null = null;
   private pretty = false;
   private presenting = false;
@@ -248,6 +265,7 @@ export class ArtifactViewer implements Component {
     this.cache = null;
     this.cacheWidth = -1;
     this.cacheVersion = -1;
+    this.displayCache = null;
     this.prettyRenderer?.invalidate();
     this.slideRenderer?.invalidate();
   }
@@ -315,7 +333,8 @@ export class ArtifactViewer implements Component {
     const scrolls = this.prettyRows > this.prettyViewport;
     const showRows = this.pretty || (this.presenting && scrolls);
     const position = showRows ? ` ${Math.min(this.prettyTop + 1, Math.max(1, this.prettyRows))}/${this.prettyRows}` : "";
-    const label = this.help ? "HELP" : this.presenting ? "SLIDE" : this.pretty ? "PRETTY" : "SOURCE";
+    const sourceLabel = this.wrapped ? "SOURCE·WRAP" : "SOURCE";
+    const label = this.help ? "HELP" : this.presenting ? "SLIDE" : this.pretty ? "PRETTY" : sourceLabel;
     const mode = th.fg(this.help || this.presenting || this.pretty ? "accent" : "muted", `${label}${position}`);
     const undo = `${this.deps.history.index + 1}/${this.deps.history.versions.length}`;
     const right = th.fg("dim", `${mode}${th.fg("dim", " · ")}${undo} `);
@@ -353,7 +372,7 @@ export class ArtifactViewer implements Component {
       const [lo, hi] = selection;
       const where = describeAnchor(makeAnchor(this.doc, lo, hi));
       const inside = slide ? ` ${th.fg("dim", `(slide ${slide.number})`)}` : "";
-      const keys = "r remove · l less · m more · e edit · o other · x explain · y yank";
+      const keys = "r remove · l less · m more · e edit · o other · x explain · y yank · w wrap";
       return this.fit(` ${th.fg("accent", where)}${inside}  ${th.fg("dim", keys)}`, width);
     }
 
@@ -363,7 +382,7 @@ export class ArtifactViewer implements Component {
       return this.fit(` ${where}  ${th.fg("dim", keys)}`, width);
     }
 
-    const keys = "v select · r l m e o x · y yank · u undo · p pretty · h help · q close";
+    const keys = "v select · r l m e o x · y yank · w wrap · p pretty · h help · q close";
     return this.fit(` ${th.fg("dim", keys)}`, width);
   }
 
@@ -398,39 +417,94 @@ export class ArtifactViewer implements Component {
 
   // --------------------------------------------------------- body modes
 
+  private gutterWidth(): number {
+    return Math.max(3, String(this.doc.lines.length).length);
+  }
+
+  private contentWidthFor(width: number): number {
+    return Math.max(4, width - this.gutterWidth() - 2);
+  }
+
+  /**
+   * Source lines laid out as screen rows. Unwrapped, one line is one row with
+   * its overflow truncated at render time; wrapped, a line becomes as many rows
+   * as it needs and the numbering only appears on the first.
+   */
+  private sourceRows(contentWidth: number): { rows: DisplayRow[]; firstRow: number[] } {
+    const key = `${this.doc.rev}:${contentWidth}:${this.wrapped}`;
+    if (this.displayCache?.key === key) return this.displayCache;
+
+    const rows: DisplayRow[] = [];
+    const firstRow = new Array<number>(this.doc.lines.length).fill(0);
+
+    this.doc.lines.forEach((line, index) => {
+      firstRow[index] = rows.length;
+      const styled = styleSourceLine(line, this.doc.kind, this.theme);
+
+      if (!this.wrapped) {
+        rows.push({ line: index, text: styled, first: true });
+        return;
+      }
+
+      const segments = wrapTextWithAnsi(styled, contentWidth);
+      for (let i = 0; i < segments.length; i++) {
+        rows.push({ line: index, text: segments[i], first: i === 0 });
+      }
+    });
+
+    this.displayCache = { key, rows, firstRow };
+    return this.displayCache;
+  }
+
+  private rowOfLine(line: number, contentWidth: number): number {
+    const { firstRow } = this.sourceRows(contentWidth);
+    return firstRow[clamp(line, 0, Math.max(0, firstRow.length - 1))] ?? 0;
+  }
+
   private renderSource(width: number, bodyHeight: number): string[] {
     const th = this.theme;
-    const total = this.doc.lines.length;
-    const gutter = Math.max(3, String(total).length);
-    const contentWidth = Math.max(4, width - gutter - 2);
+    const gutter = this.gutterWidth();
+    const contentWidth = this.contentWidthFor(width);
 
-    this.cursor = clamp(this.cursor, 0, Math.max(0, total - 1));
-    this.keepCursorVisible(bodyHeight, total);
+    this.cursor = clamp(this.cursor, 0, Math.max(0, this.doc.lines.length - 1));
+    const { rows, firstRow } = this.sourceRows(contentWidth);
+
+    const maxScroll = Math.max(0, rows.length - bodyHeight);
+    const cursorRow = firstRow[this.cursor] ?? 0;
+    if (cursorRow < this.scrollTop) this.scrollTop = cursorRow;
+    if (cursorRow >= this.scrollTop + bodyHeight) this.scrollTop = cursorRow - bodyHeight + 1;
+    this.scrollTop = clamp(this.scrollTop, 0, maxScroll);
+    this.cursorScreenRow = clamp(cursorRow - this.scrollTop, 0, Math.max(0, bodyHeight - 1));
 
     const selection = this.selectionRange();
     const out: string[] = [];
 
-    for (let row = 0; row < bodyHeight; row++) {
-      const index = this.scrollTop + row;
-      if (index >= total) {
+    for (let offset = 0; offset < bodyHeight; offset++) {
+      const display = rows[this.scrollTop + offset];
+      if (!display) {
         out.push(blankLine(width));
         continue;
       }
 
-      const isCursor = index === this.cursor;
-      const selected = selection !== null && index >= selection[0] && index <= selection[1];
+      const isCursor = display.line === this.cursor;
+      const selected = selection !== null && display.line >= selection[0] && display.line <= selection[1];
 
-      const number = String(index + 1).padStart(gutter);
-      const gutterText = th.fg(selected || isCursor ? "accent" : "dim", number);
-      const marker = isCursor ? th.fg("accent", "▸") : " ";
+      const marker = isCursor && display.first ? th.fg("accent", "▸") : " ";
+      const number = display.first ? String(display.line + 1).padStart(gutter) : " ".repeat(gutter);
+      const gutterText = display.first
+        ? th.fg(selected || isCursor ? "accent" : "dim", number)
+        : number;
+
       // Selected rows drop syntax colors: the selection bar reads better as
       // plain text, and it keeps the background unbroken across the line.
-      const raw = this.doc.lines[index] ?? "";
-      const content = selected ? raw : styleSourceLine(raw, this.doc.kind, th);
+      const text = selected ? stripTerminalSequences(display.text) : display.text;
+      // Unwrapped rows still need truncating; wrapped ones already fit.
+      const fitted = this.wrapped ? text : truncateToWidth(text, contentWidth, "…");
+      const padded = fitted + " ".repeat(Math.max(0, contentWidth - visibleWidth(fitted)));
 
-      let line = `${marker}${gutterText} ${truncateToWidth(content, contentWidth, "…", true)}`;
+      let line = `${marker}${gutterText} ${padded}`;
       if (selected) line = th.bg("selectedBg", truncateToWidth(line, width, "…", true));
-      out.push(line);
+      out.push(truncateToWidth(line, width, "…", true));
     }
 
     return out;
@@ -520,7 +594,13 @@ export class ArtifactViewer implements Component {
 
   /** Where on screen the cursor sits now, so the other view can preserve it. */
   private captureAnchor(): number {
-    return clamp(this.cursor - this.scrollTop, 0, Math.max(0, this.lastBodyHeight - 1));
+    return clamp(this.cursorScreenRow, 0, Math.max(0, this.lastBodyHeight - 1));
+  }
+
+  /** Scroll so that `line` sits `offset` rows below the top of the view. */
+  private scrollToLine(line: number, offset: number): void {
+    const row = this.rowOfLine(line, this.contentWidthFor(this.lastWidth));
+    this.scrollTop = Math.max(0, row - offset);
   }
 
   private enterPretty(): void {
@@ -547,7 +627,7 @@ export class ArtifactViewer implements Component {
     const row = clamp(this.prettyTop + this.pagerOffset, 0, rows.length - 1);
     const line = clamp(map.toLine[row] ?? this.cursor, 0, this.doc.lines.length - 1);
     this.cursor = line;
-    this.scrollTop = clamp(line - this.pagerOffset, 0, Math.max(0, this.doc.lines.length - 1));
+    this.scrollToLine(line, this.pagerOffset);
   }
 
   private enterPresentation(): void {
@@ -582,7 +662,7 @@ export class ArtifactViewer implements Component {
     const row = clamp(this.prettyTop + this.pagerOffset, 0, rows.length - 1);
     const line = clamp(map.toLine[row] ?? this.cursor, slide.start, slide.end);
     this.cursor = line;
-    this.scrollTop = clamp(line - this.pagerOffset, 0, Math.max(0, this.doc.lines.length - 1));
+    this.scrollToLine(line, this.pagerOffset);
   }
 
   private markdown(): Markdown {
@@ -597,13 +677,6 @@ export class ArtifactViewer implements Component {
       this.slideRenderer = new Markdown(slideSource(this.doc, slide), 1, 1, this.deps.markdownTheme);
     }
     return this.slideRenderer;
-  }
-
-  private keepCursorVisible(bodyHeight: number, total: number): void {
-    const maxScroll = Math.max(0, total - bodyHeight);
-    if (this.cursor < this.scrollTop) this.scrollTop = this.cursor;
-    if (this.cursor >= this.scrollTop + bodyHeight) this.scrollTop = this.cursor - bodyHeight + 1;
-    this.scrollTop = clamp(this.scrollTop, 0, maxScroll);
   }
 
   // --------------------------------------------------------------- input
@@ -701,6 +774,13 @@ export class ArtifactViewer implements Component {
 
     if (this.pretty) {
       this.handlePrettyKey(data);
+      return;
+    }
+
+    if (data === "w") {
+      this.wrapped = !this.wrapped;
+      this.status = { text: this.wrapped ? "soft wrap on" : "soft wrap off", tone: "info" };
+      this.touch();
       return;
     }
 
