@@ -39,8 +39,8 @@ moved) or rejected (if it is gone) instead of silently editing the wrong place.
 | `v` | start or clear a visual selection |
 | `r` | remove the selection (or the cursor line) |
 | `l` / `m` | say it shorter / longer |
-| `e` | replace the selection with text you type — applied directly, no agent |
-| `o` / `enter` | other: describe the change in words and the agent applies it |
+| `e` | rewrite the selection — opens pi's editor prefilled with it, then applies the result directly, no agent |
+| `o` / `enter` | other: describe the change in words; same editor, and the agent applies it |
 | `x` | explain — the agent replies without editing |
 | `y` | yank: copy the selection, the cursor line, the whole slide, or the visible rows |
 | `u` / `ctrl+r` | undo / redo the file, server-side |
@@ -138,11 +138,16 @@ Two fixtures, meant to be read side by side:
 
 ## How a change flows
 
-All five actions are one keystroke on the selection: `r` remove, `l` less,
+All the actions are one keystroke on the selection: `r` remove, `l` less,
 `m` more, `o` other (words to the agent), `x` explain. `e` is the exception and
 never reaches the agent at all — it is a typed replacement applied to the file
 directly, which line anchors make exact, and it lands on the undo stack like any
 other write so `u` reverts it.
+
+`e` and `o` compose in **pi's own editor**, which means multi-line text, your
+editor keybindings, and `ctrl+g` to drop into `$VISUAL`/`$EDITOR` (real vim, if
+that is what you want). The viewer closes while you compose and reopens exactly
+where you were, with its cursor, mode and selection intact.
 
 1. You press `l` on lines 12–18.
 2. The extension checks the anchor against the current file and sends a follow-up
