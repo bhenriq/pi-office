@@ -9,6 +9,7 @@
 import { readFileSync } from "node:fs";
 import type { EditorComponent } from "@earendil-works/pi-tui";
 import { ArtifactViewer, type ViewerTheme, type ViewerIntent } from "../lib/viewer.ts";
+import type { ExternalEditResult } from "../lib/external-editor.ts";
 import { makeDoc } from "../lib/source.ts";
 
 const theme: ViewerTheme = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, inverse: (s) => s };
@@ -65,7 +66,7 @@ function makeFake(created: FakeEditor[]): EditorComponent {
   } as EditorComponent;
 }
 
-function session(path: string, keys: string[], mode?: "prompt" | "editor") {
+function session(path: string, keys: string[], mode?: "prompt" | "editor" | "vim", external?: (content: string) => Promise<ExternalEditResult>) {
   const raw = readFileSync(path, "utf8");
   const intents: ViewerIntent[] = [];
   const editors: FakeEditor[] = [];
@@ -80,12 +81,13 @@ function session(path: string, keys: string[], mode?: "prompt" | "editor") {
     onRedo: () => {},
     onClose: () => {},
     createEditor: () => makeFake(editors),
+    editExternally: external,
   });
   viewer.render(90);
 
   // The compose mode is remembered for the process, so set it explicitly rather
   // than assuming what a previous test left behind.
-  if (mode && viewer.debugPosition().composeMode !== mode) {
+  while (mode && viewer.debugPosition().composeMode !== mode) {
     viewer.handleInput("\x05");
     viewer.render(90);
   }
@@ -118,7 +120,10 @@ console.log("ctrl+e switches the composer");
   check("prefilled with the cursor line", editors[0]?.text === lines[8], JSON.stringify(editors[0]?.text));
   check("the editor owns the body", viewer.render(90).join("\n").includes("[editor]"));
 
-  viewer.handleInput("\x05"); // back to the prompt
+  viewer.handleInput("\x05"); // editor → vim
+  viewer.render(90);
+  check("editor → vim", viewer.debugPosition().composeMode === "vim");
+  viewer.handleInput("\x05"); // vim → prompt
   viewer.render(90);
   check("mode is prompt again", viewer.debugPosition().composeMode === "prompt");
   viewer.handleInput("e");
@@ -160,6 +165,72 @@ console.log("cancelling");
   viewer.render(90);
   check("nothing submitted", intents.length === 0, String(intents.length));
   check("back to source", !viewer.render(90).join("\n").includes("[editor]"));
+}
+
+console.log("the vim mode hands the buffer to a real editor");
+{
+  const calls: string[] = [];
+  const external = async (content: string): Promise<ExternalEditResult> => {
+    calls.push(content);
+    return { status: "complete", content: "## Composed in vim" };
+  };
+
+  const { viewer, intents, lines } = session("examples/demo-deck.md", ["j", "j", "v", "j", "e"], "vim", external);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  viewer.render(90);
+
+  check("editor received the selected source", calls[0] === lines.slice(8, 10).join("\n"), JSON.stringify(calls[0]));
+  check("intent is a replace", intents[0]?.kind === "replace", String(intents[0]?.kind));
+  check("carries the editor's text", intents[0]?.replacement === "## Composed in vim", JSON.stringify(intents[0]?.replacement));
+  check("carries the original anchor", intents[0]?.anchor.start === 8 && intents[0]?.anchor.end === 9, JSON.stringify(intents[0]?.anchor));
+  check("no embedded composer was opened", !viewer.render(90).join("\n").includes("[editor]"));
+}
+
+console.log("vim mode: cancelling and failures");
+{
+  const cancelled = async (): Promise<ExternalEditResult> => ({ status: "cancelled" });
+  const first = session("examples/demo-deck.md", ["e"], "vim", cancelled);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  first.viewer.render(90);
+  check("cancel submits nothing", first.intents.length === 0, String(first.intents.length));
+
+  const failed = async (): Promise<ExternalEditResult> => ({ status: "failed", message: "could not launch nvim" });
+  const second = session("examples/demo-deck.md", ["e"], "vim", failed);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const body = second.viewer.render(90).join("\n");
+  check("failure is reported", body.includes("could not launch nvim"), body.split("\n").slice(-2).join("\n"));
+  check("failure submits nothing", second.intents.length === 0, String(second.intents.length));
+
+  const empty = async (): Promise<ExternalEditResult> => ({ status: "complete", content: "   " });
+  const third = session("examples/demo-deck.md", ["e"], "vim", empty);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  third.viewer.render(90);
+  check("blank buffer submits nothing", third.intents.length === 0, String(third.intents.length));
+}
+
+console.log("vim mode: o composes an instruction");
+{
+  const external = async (content: string): Promise<ExternalEditResult> => {
+    check("instruction buffer starts empty", content === "", JSON.stringify(content));
+    return { status: "complete", content: "tighten this slide" };
+  };
+  const { viewer, intents } = session("examples/demo-deck.md", ["o"], "vim", external);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  viewer.render(90);
+  check("intent is an edit", intents[0]?.kind === "edit", String(intents[0]?.kind));
+  check("carries the instruction", intents[0]?.instruction === "tighten this slide", intents[0]?.instruction);
+}
+
+console.log("ctrl+e cycles all three modes");
+{
+  const { viewer } = session("examples/demo-doc.md", [], "prompt");
+  const seen: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    viewer.handleInput("\x05");
+    viewer.render(90);
+    seen.push(viewer.debugPosition().composeMode);
+  }
+  check("prompt → editor → vim → prompt", seen.join(",") === "editor,vim,prompt", seen.join(","));
 }
 
 console.log(failures === 0 ? "\nall compose modes behave" : `\n${failures} failure(s)`);

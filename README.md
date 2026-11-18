@@ -41,7 +41,7 @@ moved) or rejected (if it is gone) instead of silently editing the wrong place.
 | `l` / `m` | say it shorter / longer |
 | `e` | rewrite the selection — applied directly, no agent |
 | `o` / `enter` | other: describe the change in words and the agent applies it |
-| `ctrl+e` | compose `e`/`o` in the one-line prompt, or in pi's editor |
+| `ctrl+e` | cycle how `e`/`o` compose: prompt → pi's editor → your `$EDITOR` |
 | `x` | explain — the agent replies without editing |
 | `y` | yank: copy the selection, the cursor line, the whole slide, or the visible rows |
 | `u` / `ctrl+r` | undo / redo the file, server-side |
@@ -145,17 +145,19 @@ never reaches the agent at all — it is a typed replacement applied to the file
 directly, which line anchors make exact, and it lands on the undo stack like any
 other write so `u` reverts it.
 
-`e` and `o` compose in one of two places, chosen with `ctrl+e` and remembered for
-the session:
+`e` and `o` compose in one of three places, cycled with `ctrl+e` and remembered
+for the process:
 
-- **the prompt** — the viewer's own one-line input, no mode switching;
-- **the editor** — pi's configured editor, which is `pi-vim` when it is
-  installed: full modal editing, multi-line, in the body of the viewer, with the
-  document still on screen. With a modal editor, press `esc` first and then
-  `enter`; `enter` submits from normal mode. The editor takes the whole body, so
-  a long draft has room.
+| Mode | What happens |
+| --- | --- |
+| **prompt** | the viewer's own one-line input; the document stays put |
+| **editor** | pi's configured editor — `pi-vim` when installed — embedded in the viewer's body, so the document stays on screen. With a modal editor press `esc` first: `enter` submits from normal mode |
+| **vim** | pi suspends, `$VISUAL` / `$EDITOR` takes the whole terminal on a temporary buffer, and pi resumes when it exits. Your real vim, with your config and plugins |
 
-`ctrl+c` cancels either one.
+In the embedded mode `ctrl+c` cancels and `ctrl+e` moves on to the next mode. The
+external editor is resolved the way pi resolves it: `$VISUAL`, then `$EDITOR`,
+then `nano` (or Notepad on Windows). A non-zero exit, or a buffer that came back
+unchanged, applies nothing.
 
 1. You press `l` on lines 12–18.
 2. The extension checks the anchor against the current file and sends a follow-up

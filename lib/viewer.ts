@@ -28,6 +28,7 @@ import {
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { buildRowMap, type RowMap } from "./align.ts";
+import type { ExternalEditResult } from "./external-editor.ts";
 import { describeAnchor, makeAnchor, type Anchor } from "./anchor.ts";
 import { styleSourceLine, type StyleTheme } from "./highlight.ts";
 import { parseDeck, slideAt, slideSource, type Deck, type Slide, type SlideContext } from "./slides.ts";
@@ -69,6 +70,11 @@ export interface ViewerDeps {
    * single-line prompt.
    */
   createEditor?(): EditorComponent | null;
+  /**
+   * Compose in a real editor: suspend the TUI, run `$VISUAL`/`$EDITOR`, resume.
+   * The host owns the terminal, so the viewer only receives the result.
+   */
+  editExternally?(content: string): Promise<ExternalEditResult>;
   onUndo(): void;
   onRedo(): void;
   onClose(): void;
@@ -103,8 +109,8 @@ const HELP: { section: string; rows: [keys: string, description: string][] }[] =
       ["r l m", "remove / shorter / longer"],
       ["e", "rewrite the selection: replace it with text you compose"],
       ["o  enter", "other: describe the change in words"],
-      ["ctrl+e", "switch e/o between the one-line prompt and pi's editor"],
-      ["", "with a modal editor, esc first: enter submits from normal mode"],
+      ["ctrl+e", "cycle e/o between prompt → pi's editor → your $EDITOR"],
+      ["", "a modal editor needs esc first: enter submits from normal mode"],
       ["x", "explain, without changing the file"],
       ["y", "yank: copy the selection, line, slide, or visible rows"],
       ["u  ctrl+r", "undo / redo the file"],
@@ -124,8 +130,14 @@ const HELP: { section: string; rows: [keys: string, description: string][] }[] =
 ];
 
 /** How `e`/`o` compose. Remembered for the process, so it survives reopening. */
-type ComposeMode = "prompt" | "editor";
+type ComposeMode = "prompt" | "editor" | "vim";
 let defaultComposeMode: ComposeMode = "prompt";
+const COMPOSE_MODES: ComposeMode[] = ["prompt", "editor", "vim"];
+const COMPOSE_LABELS: Record<ComposeMode, string> = {
+  prompt: "the one-line prompt",
+  editor: "pi's editor",
+  vim: "your external editor",
+};
 
 interface ActiveComposer {
   editor: EditorComponent;
@@ -751,7 +763,7 @@ export class ArtifactViewer implements Component {
     }
 
     if (matchesKey(data, "ctrl+e")) {
-      this.closeComposer(this.composeMode === "editor" ? "prompt" : "editor");
+      this.cycleComposeMode();
       return;
     }
 
@@ -1029,7 +1041,21 @@ export class ArtifactViewer implements Component {
    * editor (pi-vim when installed). `ctrl+e` chooses, and the choice is
    * remembered for the process.
    */
+  private nextComposeMode(): ComposeMode {
+    const index = COMPOSE_MODES.indexOf(this.composeMode);
+    return COMPOSE_MODES[(index + 1) % COMPOSE_MODES.length] ?? "prompt";
+  }
+
+  private cycleComposeMode(): void {
+    this.closeComposer(this.nextComposeMode());
+  }
+
   private compose(mode: "instruction" | "replace"): void {
+    if (this.composeMode === "vim" && this.deps.editExternally) {
+      void this.composeExternally(mode);
+      return;
+    }
+
     if (this.composeMode === "prompt" || !this.deps.createEditor) {
       if (mode === "replace") this.openReplacePrompt();
       else this.openPrompt();
@@ -1062,6 +1088,67 @@ export class ArtifactViewer implements Component {
     };
     this.anchorLine = null;
     this.status = null;
+    this.touch();
+  }
+
+  /**
+   * Suspend pi and compose in the user's own editor. Unlike the embedded
+   * composer there is nothing on screen while it runs, so the only thing that
+   * matters afterwards is whether the buffer came back changed.
+   */
+  private async composeExternally(mode: "instruction" | "replace"): Promise<void> {
+    const editExternally = this.deps.editExternally;
+    if (!editExternally) {
+      if (mode === "replace") this.openReplacePrompt();
+      else this.openPrompt();
+      return;
+    }
+
+    const target = this.target();
+    const range = mode === "replace" ? this.replaceTarget() : { start: target.start, end: target.end };
+    const wholeSlide = mode === "replace" ? false : target.wholeSlide;
+    const anchor = makeAnchor(this.doc, range.start, range.end);
+    const prefill = this.doc.lines.slice(range.start, range.end + 1).join("\n");
+
+    this.anchorLine = null;
+    this.status = { text: `opening your editor for ${describeAnchor(anchor)}`, tone: "info" };
+    this.touch();
+
+    const result = await editExternally(mode === "replace" ? prefill : "");
+
+    if (result.status !== "complete") {
+      this.status = result.status === "failed" || result.message
+        ? { text: result.message ?? "nothing applied", tone: result.status === "failed" ? "error" : "info" }
+        : null;
+      this.touch();
+      return;
+    }
+
+    const text = result.content;
+    if (!text.trim()) {
+      this.status = { text: "nothing to apply", tone: "error" };
+      this.touch();
+      return;
+    }
+
+    if (mode === "replace") {
+      this.status = { text: `replacing ${describeAnchor(anchor)}`, tone: "info" };
+      this.deps.onSubmit({
+        kind: "replace",
+        instruction: "",
+        anchor,
+        replacement: text,
+        slide: this.slideContext(wholeSlide),
+      });
+    } else {
+      this.status = { text: `sent ${describeAnchor(anchor)} to the agent`, tone: "info" };
+      this.deps.onSubmit({
+        kind: "edit",
+        instruction: text.trim(),
+        anchor,
+        slide: this.slideContext(wholeSlide),
+      });
+    }
     this.touch();
   }
 
@@ -1101,10 +1188,7 @@ export class ArtifactViewer implements Component {
     if (next) {
       this.composeMode = next;
       defaultComposeMode = next;
-      this.status = {
-        text: next === "editor" ? "composing in the editor" : "composing in the prompt",
-        tone: "info",
-      };
+      this.status = { text: `e and o compose in ${COMPOSE_LABELS[next]}`, tone: "info" };
     }
     this.touch();
   }
@@ -1114,7 +1198,7 @@ export class ArtifactViewer implements Component {
     if (!composer) return;
 
     if (matchesKey(data, "ctrl+e")) {
-      this.closeComposer("prompt");
+      this.closeComposer(this.nextComposeMode());
       return;
     }
     if (matchesKey(data, "ctrl+c")) {

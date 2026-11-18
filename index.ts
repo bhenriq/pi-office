@@ -21,6 +21,7 @@ import { getMarkdownTheme, getSelectListTheme } from "@earendil-works/pi-coding-
 import { Editor } from "@earendil-works/pi-tui";
 import { checkAnchor, describeAnchor } from "./lib/anchor.ts";
 import { copyText } from "./lib/clipboard.ts";
+import { editInExternalEditor } from "./lib/external-editor.ts";
 import { buildPrompt } from "./lib/prompt.ts";
 import { makeDoc, rawRange, readDoc, type SourceDoc } from "./lib/source.ts";
 import { ArtifactViewer, type ViewerHistory, type ViewerIntent, type ViewerTheme } from "./lib/viewer.ts";
@@ -220,6 +221,17 @@ async function openArtifact(filePath: string, ctx: ExtensionContext): Promise<vo
           return null;
         }
       },
+      // Real editor: stop the TUI, hand over the terminal, resume. The same
+      // sequence pi uses for its own "open in external editor".
+      editExternally: (content) =>
+        editInExternalEditor({
+          content,
+          suspend: () => tui.stop(),
+          resume: () => {
+            tui.start();
+            tui.requestRender(true);
+          },
+        }),
       onCopy: (text, label) => {
         void copyText(text).then((result) => {
           if (!result.ok) {
