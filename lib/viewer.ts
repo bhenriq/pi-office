@@ -147,6 +147,11 @@ interface ActiveComposer {
   title: string;
 }
 
+/** Braille spinner: single cells, no width surprises. */
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const TICK_MS = 110;
+const FLASH_MS = 700;
+
 const MIN_HEIGHT = 9;
 const MAX_HEIGHT = 200;
 
@@ -199,6 +204,11 @@ export class ArtifactViewer implements Component {
   private status: { text: string; tone: "info" | "error" } | null = null;
   private agentBusy = false;
   private agentLine = "";
+  private sentLabel = "";
+  private busySince = 0;
+  private flashUntil = 0;
+  private animFrame = 0;
+  private animTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
    * Rows between the cursor's rendered row and the top of the pager view. Stored
@@ -256,7 +266,49 @@ export class ArtifactViewer implements Component {
   setAgentState(busy: boolean, line = ""): void {
     this.agentBusy = busy;
     this.agentLine = line;
+    if (busy) this.startTicking();
+    else this.stopTicking();
     this.touch();
+  }
+
+  dispose(): void {
+    this.stopTicking();
+  }
+
+  /**
+   * Repaint at ~9fps while a request is in flight. Deliberately does *not* bump
+   * the version: the frame cache stays valid and only the status line is rebuilt.
+   */
+  private startTicking(): void {
+    if (this.animTimer) return;
+    this.animTimer = setInterval(() => {
+      this.animFrame++;
+      this.deps.tui.requestRender();
+    }, TICK_MS);
+    // Never keep the process alive just to spin.
+    (this.animTimer as { unref?: () => void }).unref?.();
+  }
+
+  private stopTicking(): void {
+    if (!this.animTimer) return;
+    clearInterval(this.animTimer);
+    this.animTimer = null;
+  }
+
+  /** Acknowledge a submission immediately, before any agent output arrives. */
+  private markFlash(): void {
+    this.flashUntil = Date.now() + FLASH_MS;
+    const timer = setTimeout(() => this.deps.tui.requestRender(), FLASH_MS + 30);
+    (timer as { unref?: () => void }).unref?.();
+  }
+
+  private markSent(label: string): void {
+    this.sentLabel = label;
+    this.agentBusy = true;
+    this.agentLine = "";
+    this.busySince = Date.now();
+    this.flashUntil = Date.now() + FLASH_MS;
+    this.startTicking();
   }
 
   /** Show the agent's reply in a panel the user scrolls and dismisses. */
@@ -338,39 +390,40 @@ export class ArtifactViewer implements Component {
     // Inline, pi keeps five rows for its own chrome; as an overlay we own them.
     const height = this.deps.fullscreen ? clamp(rows, MIN_HEIGHT, MAX_HEIGHT) : clamp(rows - 5, MIN_HEIGHT, MAX_HEIGHT);
 
-    if (this.cache && this.cacheWidth === width && this.cacheHeight === height && this.cacheVersion === this.version) {
-      return this.cache;
-    }
+    const cached = this.cache && this.cacheWidth === width && this.cacheHeight === height && this.cacheVersion === this.version;
 
     const bodyHeight = height - 5;
     this.lastWidth = width;
     this.lastBodyHeight = bodyHeight;
-    const body = this.composer
-      ? this.renderComposer(width, bodyHeight)
-      : this.answer
-      ? this.renderAnswer(width, bodyHeight)
-      : this.help
-      ? this.renderHelp(width, bodyHeight)
-      : this.presenting
-        ? this.renderSlide(width, bodyHeight)
-        : this.pretty
-          ? this.renderPretty(width, bodyHeight)
-          : this.renderSource(width, bodyHeight);
+    const body = cached
+      ? []
+      : this.composer
+        ? this.renderComposer(width, bodyHeight)
+        : this.answer
+          ? this.renderAnswer(width, bodyHeight)
+          : this.help
+            ? this.renderHelp(width, bodyHeight)
+            : this.presenting
+              ? this.renderSlide(width, bodyHeight)
+              : this.pretty
+                ? this.renderPretty(width, bodyHeight)
+                : this.renderSource(width, bodyHeight);
 
-    const lines = [
-      this.renderHeader(width),
-      this.renderRule(width),
-      ...body,
-      this.renderRule(width),
-      this.renderFooter(width),
-      this.renderStatusLine(width),
-    ];
+    if (!cached) {
+      this.cache = [
+        this.renderHeader(width),
+        this.renderRule(width),
+        ...body,
+        this.renderRule(width),
+        this.renderFooter(width),
+      ];
+      this.cacheWidth = width;
+      this.cacheHeight = height;
+      this.cacheVersion = this.version;
+    }
 
-    this.cache = lines;
-    this.cacheWidth = width;
-    this.cacheHeight = height;
-    this.cacheVersion = this.version;
-    return lines;
+    // The status line is always recomputed: it is the animation surface.
+    return [...(this.cache ?? []), this.renderStatusLine(width)];
   }
 
   private fit(text: string, width: number): string {
@@ -486,17 +539,29 @@ export class ArtifactViewer implements Component {
       return this.fit(line, width);
     }
 
-    if (this.status) {
-      const color = this.status.tone === "error" ? "error" : "success";
-      return this.fit(` ${th.fg(color, this.status.text)}`, width);
+    // A request in flight owns the status line: spinner, what was sent, how long
+    // it has been waiting, and whatever the agent has said so far.
+    if (this.agentBusy) {
+      const frame = SPINNER[this.animFrame % SPINNER.length] ?? "⠋";
+      const elapsed = Math.max(0, Math.round((Date.now() - this.busySince) / 1000));
+      const label = this.sentLabel || "agent working";
+      const clock = elapsed > 0 ? th.fg("dim", `  ${elapsed}s`) : "";
+      const room = Math.max(8, width - visibleWidth(label) - 10);
+      const detail = this.agentLine ? th.fg("muted", `  ${truncateToWidth(this.agentLine, room, "…")}`) : "";
+      return this.flash(this.fit(` ${th.fg("accent", frame)} ${th.fg("text", label)}${clock}${detail}`, width));
     }
 
-    if (this.agentBusy) {
-      const detail = this.agentLine ? ` ${truncateToWidth(this.agentLine, Math.max(0, width - 20), "…")}` : "…";
-      return this.fit(` ${th.fg("accent", "✦")} ${th.fg("dim", "agent working")}${th.fg("muted", detail)}`, width);
+    if (this.status) {
+      const color = this.status.tone === "error" ? "error" : "success";
+      return this.flash(this.fit(` ${th.fg(color, this.status.text)}`, width));
     }
 
     return this.fit("", width);
+  }
+
+  /** Briefly invert the status line so a keypress feels acknowledged. */
+  private flash(line: string): string {
+    return Date.now() < this.flashUntil ? this.theme.inverse(line) : line;
   }
 
   // --------------------------------------------------------- body modes
@@ -1222,6 +1287,7 @@ export class ArtifactViewer implements Component {
     }
 
     if (mode === "replace") {
+      this.markFlash();
       this.status = { text: `replacing ${describeAnchor(anchor)}`, tone: "info" };
       this.deps.onSubmit({
         kind: "replace",
@@ -1231,6 +1297,7 @@ export class ArtifactViewer implements Component {
         slide: this.slideContext(wholeSlide),
       });
     } else {
+      this.markSent(`sent ${describeAnchor(anchor)}`);
       this.status = { text: `sent ${describeAnchor(anchor)} to the agent`, tone: "info" };
       this.deps.onSubmit({
         kind: "edit",
@@ -1253,6 +1320,7 @@ export class ArtifactViewer implements Component {
     }
 
     if (composer.mode === "replace") {
+      this.markFlash();
       this.status = { text: `replacing ${describeAnchor(composer.anchor)}`, tone: "info" };
       this.deps.onSubmit({
         kind: "replace",
@@ -1262,6 +1330,7 @@ export class ArtifactViewer implements Component {
         slide: composer.slide,
       });
     } else {
+      this.markSent(`sent ${describeAnchor(composer.anchor)}`);
       this.status = { text: `sent ${describeAnchor(composer.anchor)} to the agent`, tone: "info" };
       this.deps.onSubmit({
         kind: "edit",
@@ -1429,6 +1498,7 @@ export class ArtifactViewer implements Component {
     const anchor = makeAnchor(this.doc, start, end);
 
     this.anchorLine = null;
+    this.markFlash();
     this.status = { text: `replacing ${describeAnchor(anchor)}`, tone: "info" };
     this.deps.onSubmit({
       kind: "replace",
@@ -1466,6 +1536,7 @@ export class ArtifactViewer implements Component {
       : undefined;
 
     this.anchorLine = null;
+    this.markSent(wholeSlide ? `sent slide ${slide?.number}` : `sent ${describeAnchor(anchor)}`);
     this.status = {
       text: wholeSlide
         ? `sent slide ${slide?.number} to the agent`

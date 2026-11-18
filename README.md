@@ -83,6 +83,24 @@ file.
   there, so it behaves like a pager: `j`/`k`, `ctrl+d`/`ctrl+u`, `g`/`G` move the
   view, and the header shows the current rendered row (`PRETTY 12/82`).
 
+## Feedback while the agent works
+
+Sending a request flashes the status line and starts a spinner:
+
+```
+ ⠹ sent lines 12–18  4s  Reading the selection…
+```
+
+- the **spinner** runs from the moment you press the key, not from the first
+  token, so the gap before the agent answers is visible;
+- the **elapsed seconds** answer "is it stuck?", which a spinner alone cannot;
+- the muted text is the agent's latest output, so you can tell what it is doing.
+
+It stops when the agent settles and the status line returns to the outcome
+(`file updated`, `undone`, or the reply panel for `x`). Only the status line is
+repainted while it spins — the document, the rendered views and the reply panel
+all stay cached.
+
 ## Copying
 
 `y` puts text on the clipboard, and what it copies depends on what you are
