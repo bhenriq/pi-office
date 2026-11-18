@@ -41,6 +41,7 @@ moved) or rejected (if it is gone) instead of silently editing the wrong place.
 | `e` | replace the selection with text you type — applied directly, no agent |
 | `o` / `enter` | other: describe the change in words and the agent applies it |
 | `x` | explain — the agent replies without editing |
+| `y` | yank: copy the selection, the cursor line, the whole slide, or the visible rows |
 | `u` / `ctrl+r` | undo / redo the file, server-side |
 | `p` | pretty mode, or presentation mode in a deck |
 | `]` / `[` | jump to next / previous slide (decks only) |
@@ -75,6 +76,22 @@ file.
   using the active theme. Read-only, for looking at prose. There is no cursor
   there, so it behaves like a pager: `j`/`k`, `ctrl+d`/`ctrl+u`, `g`/`G` move the
   view, and the header shows the current rendered row (`PRETTY 12/82`).
+
+## Copying
+
+`y` puts text on the clipboard, and what it copies depends on what you are
+looking at:
+
+| Looking at | `y` copies |
+| --- | --- |
+| a selection | those source lines, byte for byte, Markdown syntax intact |
+| a line in source mode | that line |
+| a slide in presentation | the whole slide as rendered — no Markdown syntax, no HTML directives, no padding |
+| pretty mode | the rows currently on screen, as rendered |
+
+It uses pi's native clipboard helper and falls back to `pbcopy`, `wl-copy`,
+`xclip`, or `xsel`, so it also works over SSH where OSC 52 would need terminal
+support. The status line says what was copied, and how, when a fallback was used.
 
 ## Decks
 

@@ -19,6 +19,7 @@ import { basename, extname, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { checkAnchor, describeAnchor } from "./lib/anchor.ts";
+import { copyText } from "./lib/clipboard.ts";
 import { buildPrompt } from "./lib/prompt.ts";
 import { makeDoc, rawRange, readDoc, type SourceDoc } from "./lib/source.ts";
 import { ArtifactViewer, type ViewerHistory, type ViewerIntent, type ViewerTheme } from "./lib/viewer.ts";
@@ -204,6 +205,15 @@ async function openArtifact(filePath: string, ctx: ExtensionContext): Promise<vo
       onSubmit: (intent) => submit(session, intent),
       onUndo: () => stepHistory(session, "undo"),
       onRedo: () => stepHistory(session, "redo"),
+      onCopy: (text, label) => {
+        void copyText(text).then((result) => {
+          if (!result.ok) {
+            session.viewer?.setStatus(`clipboard unavailable (${result.error ?? "no tool"})`, "error");
+          } else if (result.via !== "clipboard") {
+            session.viewer?.setStatus(`${label} copied via ${result.via}`, "info");
+          }
+        });
+      },
       onClose: finish,
     });
 

@@ -19,7 +19,13 @@
  */
 
 import type { Component, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
-import { Markdown, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+  Markdown,
+  matchesKey,
+  stripTerminalSequences,
+  truncateToWidth,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
 import { buildRowMap, type RowMap } from "./align.ts";
 import { describeAnchor, makeAnchor, type Anchor } from "./anchor.ts";
 import { styleSourceLine, type StyleTheme } from "./highlight.ts";
@@ -54,6 +60,8 @@ export interface ViewerDeps {
   markdownTheme: MarkdownTheme;
   history: ViewerHistory;
   onSubmit(intent: ViewerIntent): void;
+  /** `y`: hand the text to the host, which owns the clipboard. */
+  onCopy?(text: string, label: string): void;
   onUndo(): void;
   onRedo(): void;
   onClose(): void;
@@ -88,6 +96,7 @@ const HELP: { section: string; rows: [keys: string, description: string][] }[] =
       ["e", "replace the selection with text you type"],
       ["o  enter", "other: describe the change in words"],
       ["x", "explain, without changing the file"],
+      ["y", "yank: copy the selection, line, slide, or visible rows"],
       ["u  ctrl+r", "undo / redo the file"],
       ["", ""],
       ["nothing selected", "r l m o x act on the whole slide; e edits the cursor line"],
@@ -332,19 +341,19 @@ export class ArtifactViewer implements Component {
 
     if (this.presenting && slide) {
       const where = th.fg("accent", `${slide.number}/${this.deck.slides.length} ${slide.title}`);
-      const keys = "j/k scroll·next · ] [ jump · r l m e o slide · p source";
+      const keys = "j/k scroll·next · ] [ jump · r l m e o slide · y yank · p source";
       return this.fit(` ${where}  ${th.fg("dim", keys)}`, width);
     }
 
     if (this.pretty) {
-      return this.fit(th.fg("dim", " p source · j/k scroll · g/G ends · esc close"), width);
+      return this.fit(th.fg("dim", " p source · j/k scroll · g/G ends · y yank · esc close"), width);
     }
 
     if (selection) {
       const [lo, hi] = selection;
       const where = describeAnchor(makeAnchor(this.doc, lo, hi));
       const inside = slide ? ` ${th.fg("dim", `(slide ${slide.number})`)}` : "";
-      const keys = "r remove · l less · m more · e edit · o other · x explain · esc clear";
+      const keys = "r remove · l less · m more · e edit · o other · x explain · y yank";
       return this.fit(` ${th.fg("accent", where)}${inside}  ${th.fg("dim", keys)}`, width);
     }
 
@@ -354,7 +363,7 @@ export class ArtifactViewer implements Component {
       return this.fit(` ${where}  ${th.fg("dim", keys)}`, width);
     }
 
-    const keys = "v select · r l m e o x actions · u undo · p pretty · h help · q close";
+    const keys = "v select · r l m e o x · y yank · u undo · p pretty · h help · q close";
     return this.fit(` ${th.fg("dim", keys)}`, width);
   }
 
@@ -680,6 +689,11 @@ export class ArtifactViewer implements Component {
       return;
     }
 
+    if (data === "y") {
+      this.yank();
+      return;
+    }
+
     if (this.presenting) {
       this.handlePresentingKey(data);
       return;
@@ -924,6 +938,65 @@ export class ArtifactViewer implements Component {
   private replaceTarget(): { start: number; end: number } {
     const range = this.selectionRange();
     return range ? { start: range[0], end: range[1] } : { start: this.cursor, end: this.cursor };
+  }
+
+  /**
+   * Rendered rows flattened to pasteable text: no ANSI, no right padding, and no
+   * common left indent (the Markdown component pads every row by one column).
+   */
+  private renderedText(rows: string[]): string {
+    const lines = rows.map((row) => stripTerminalSequences(row).replace(/\s+$/, ""));
+    const indents = lines.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length);
+    const indent = indents.length > 0 ? Math.min(...indents) : 0;
+    return lines
+      .map((line) => line.slice(indent))
+      .join("\n")
+      .replace(/^\n+/, "")
+      .replace(/\s+$/, "");
+  }
+
+  /** The text `y` puts on the clipboard, and how to describe it. */
+  private yankPayload(): { text: string; label: string } {
+    if (this.presenting) {
+      const slide = this.activeSlide();
+      if (!slide) return { text: "", label: "" };
+      const text = this.renderedText(this.slideMarkdown(slide).render(this.lastWidth));
+      return { text, label: `slide ${slide.number}` };
+    }
+
+    if (this.pretty) {
+      const rows = this.markdown().render(this.lastWidth);
+      const start = this.prettyTop;
+      const end = Math.min(rows.length, start + this.lastBodyHeight);
+      const text = this.renderedText(rows.slice(start, end));
+      return { text, label: `${Math.max(0, end - start)} visible rows` };
+    }
+
+    const range = this.selectionRange();
+    if (range) {
+      const [lo, hi] = range;
+      return {
+        text: this.doc.lines.slice(lo, hi + 1).join("\n"),
+        label: describeAnchor(makeAnchor(this.doc, lo, hi)),
+      };
+    }
+
+    return { text: this.doc.lines[this.cursor] ?? "", label: `line ${this.cursor + 1}` };
+  }
+
+  private yank(): void {
+    const { text, label } = this.yankPayload();
+    if (!text.trim()) {
+      this.status = { text: "nothing to copy here", tone: "error" };
+      this.touch();
+      return;
+    }
+
+    // Report success optimistically: the copy is asynchronous and a failed
+    // clipboard must not look like a no-op.
+    this.status = { text: `copied ${label}`, tone: "info" };
+    this.deps.onCopy?.(text, label);
+    this.touch();
   }
 
   private submitReplace(text: string): void {
